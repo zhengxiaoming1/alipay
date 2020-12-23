@@ -1,0 +1,222 @@
+package com.r1r2.apiserver.test.pay;
+
+import cn.hutool.core.convert.Convert;
+import cn.hutool.core.lang.TypeReference;
+import cn.hutool.core.util.XmlUtil;
+import cn.hutool.crypto.SecureUtil;
+import cn.hutool.http.HttpRequest;
+import cn.hutool.http.HttpResponse;
+import com.r1r2.apiserver.biz.service.pay.constant.PayConstants;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.codec.binary.Hex;
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.http.HttpEntity;
+import org.apache.http.StatusLine;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.util.EntityUtils;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.InvalidKeyException;
+import java.security.KeyStore;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.security.cert.CertificateFactory;
+import java.util.*;
+
+@Slf4j
+public class WeiXinRefund {
+    private static final String HMAC_SHA256="HMAC-SHA256";
+
+    private static final List<String> NO_SIGN_PARAMS = Arrays.asList("sign", "key", "xmlString", "xmlDoc", "couponList");
+    /***
+     * 签名
+     * @param params 请求参数
+     * @param signType 签名算法类型
+     * @param signKey 签名key
+     * @param ignoredParams 过滤参与签名参数
+     * @return String 返回签名
+     */
+    private String createSign(Map<String, String> params, String signType, String signKey, String[] ignoredParams) {
+        StringBuilder toSign = new StringBuilder();
+        Iterator<String> var5 = (new TreeMap<>(params)).keySet().iterator();
+        while(var5.hasNext()) {
+            String key = var5.next();
+            String value = params.get(key);
+            boolean shouldSign = false;
+            if (StringUtils.isNotEmpty(value) && !ArrayUtils.contains(ignoredParams, key) && !NO_SIGN_PARAMS.contains(key)) {
+                shouldSign = true;
+            }
+            if (shouldSign) {
+                toSign.append(key).append("=").append(value).append("&");
+            }
+        }
+        toSign.append("key=").append(signKey);
+        log.info("加密字符串：{}",toSign.toString());
+        if (HMAC_SHA256.equals(signType)) {
+            return createHmacSha256Sign(toSign.toString(), signKey);
+        } else {
+            return SecureUtil.md5(toSign.toString()).toUpperCase();
+        }
+    }
+
+    /**
+     * HmacSHA256 签名
+     * @param message 消息内容
+     * @param key  签名key
+     * @return String 签名结果
+     */
+    private String createHmacSha256Sign(String message, String key) {
+        try {
+            Mac sha256 = Mac.getInstance("HmacSHA256");
+            SecretKeySpec secretKeySpec = new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
+            sha256.init(secretKeySpec);
+            byte[] bytes = sha256.doFinal(message.getBytes(StandardCharsets.UTF_8));
+            return Hex.encodeHexString(bytes).toUpperCase();
+        } catch (InvalidKeyException | NoSuchAlgorithmException var5) {
+            log.error(var5.getMessage(), var5);
+            return null;
+        }
+    }
+
+    /**
+     * sign验证
+     * @param params 请求参数
+     * @param signType 签名算法类型
+     * @param signKey 签名key
+     * @return boolean 验证签名结果
+     */
+    public boolean checkSign(Map<String, String> params, String signType, String signKey) {
+        String sign = createSign(params, signType, signKey, new String[0]);
+        log.info("sign:{}",sign);
+        if(sign != null) {
+            return sign.equals(params.get("sign"));
+        }else{
+            return false;
+        }
+    }
+
+    /**
+     * 第一种方式
+     * @throws IOException
+     */
+    public  void httpClientTest() throws IOException {
+        CloseableHttpClient client = null;
+        HttpPost httpPost = null;
+        try {
+            // 解密出16进制原证书文件内容为字节数组
+            SSLConnectionSocketFactory sslsf = getConnectionSslSocketFactory();
+            client = HttpClients.custom().setSSLSocketFactory(sslsf).build();
+            httpPost = new HttpPost("refundUrl");
+            Map<String,String> paramMap = new HashMap<>();
+            httpPost.setEntity(new StringEntity(XmlUtil.mapToXmlStr(paramMap,"xml"), "utf-8"));
+            CloseableHttpResponse response = client.execute(httpPost);
+            StatusLine statusLine = response.getStatusLine();
+            HttpEntity entity = response.getEntity();
+            if (statusLine.getStatusCode() == 200) {
+                String result = EntityUtils.toString(entity, "utf-8");
+                log.info("退款请求返回值：{}", result);
+                Map<String,String> responseMap = Convert.convert(new TypeReference<Map<String, String>>() {},XmlUtil.xmlToMap(result));
+                boolean signVerified = checkSign(responseMap, "SignType", "AppSecret");
+                if(signVerified && PayConstants.SUCCESS.equalsIgnoreCase(responseMap.get("return_code")) && PayConstants.SUCCESS.equalsIgnoreCase(responseMap.get("result_code"))) {
+                    //解析必要字段
+
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            if (client != null) {
+                client.close();
+            }
+        }
+    }
+
+    /**
+     * 获取SSL证书
+     * @return
+     */
+    private SSLConnectionSocketFactory  getConnectionSslSocketFactory() {
+        try {
+            // 证书
+            char[] password = "MchId".toCharArray();
+            byte[] bytes = Hex.decodeHex("cert".toCharArray());
+            InputStream certStream = new ByteArrayInputStream(bytes);
+            KeyStore ks = KeyStore.getInstance("PKCS12");
+            ks.load(certStream, password);
+            // 实例化密钥库 & 初始化密钥工厂
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            kmf.init(ks, password);
+            SSLContext sslContext = SSLContext.getInstance("TLSv1");
+            sslContext.init(kmf.getKeyManagers(), null, new SecureRandom());
+            SSLConnectionSocketFactory sslsf = new SSLConnectionSocketFactory(sslContext);
+            return sslsf;
+        }catch (Exception e){
+            log.error("获取SSL错误：{}",e);
+        }
+        return null;
+    }
+
+
+    /**
+     * 第二种方式 hutool工具
+     */
+    public  void hutoolRequestTest() throws IOException {
+        Map<String,String> paramMap = new HashMap<>();
+        HttpResponse response = HttpRequest.post("RefundUrl").setSSLSocketFactory(getSslSocketFactory()).setSSLProtocol("TLSv1").body(XmlUtil.mapToXmlStr(paramMap,"xml")).charset(StandardCharsets.UTF_8).execute();
+        log.info("微信退款请求返回值：{}", response);
+        Map<String,String> responseMap = Convert.convert(new TypeReference<Map<String, String>>() {},XmlUtil.xmlToMap(response.body()));
+        boolean signVerified = checkSign(responseMap, "SignType", "AppSecret");
+        if(signVerified && PayConstants.SUCCESS.equalsIgnoreCase(responseMap.get("return_code")) && PayConstants.SUCCESS.equalsIgnoreCase(responseMap.get("result_code"))) {
+            //解析必要字段
+
+        }else if(signVerified && PayConstants.SUCCESS.equalsIgnoreCase(responseMap.get("return_code"))){
+
+        }
+    }
+
+    /**
+     * 请求中添加api证书
+     * @return
+     */
+    private SSLSocketFactory getSslSocketFactory(){
+        try{
+            //证书工厂。此处指明证书的类型
+            CertificateFactory certificateFactory = CertificateFactory.getInstance("X.509");
+            // 证书
+            char[] password = "MchId".toCharArray();
+            byte[] bytes = Hex.decodeHex("Cert".toCharArray());
+            InputStream certStream = new ByteArrayInputStream(bytes);
+            KeyStore ks = KeyStore.getInstance("PKCS12");
+            ks.load(certStream, password);
+            //取得SSL的SSLContext实例
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            trustManagerFactory.init(ks);
+            KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            keyManagerFactory.init(ks, password);
+            // 第一个参数是授权的密钥管理器，用来授权验证。TrustManager[]第二个是被授权的证书管理器，用来验证服务器端的证书。第三个参数是一个随机数值，可以填写null
+            sslContext.init(keyManagerFactory.getKeyManagers(), trustManagerFactory.getTrustManagers(), new SecureRandom());
+            return sslContext.getSocketFactory() ;
+        } catch (Exception e){
+            e.printStackTrace();
+        }
+        return null ;
+    }
+
+
+}
