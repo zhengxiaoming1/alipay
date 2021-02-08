@@ -30,7 +30,7 @@ Lc436500468
 https://blog.csdn.net/u014333053/article/details/75038132
 https://blog.csdn.net/q13965211/article/details/88026850
 
-# disruptor 高性能队列
+# disruptor 高性能队列 并发编程框架
 https://www.cnblogs.com/crazymakercircle/p/13909235.html
 
 
