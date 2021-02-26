@@ -1,0 +1,4 @@
+show variables like 'innodb_buffe%';
+
+SET GLOBAL innodb_buffer_pool_instances = 16
+SET GLOBAL innodb_buffer_pool_size = 4294967296 
