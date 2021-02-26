@@ -1,0 +1,32 @@
+
+#删除所有节点关系
+match (n) detach delete n
+
+# 查找 孤立节点
+match (n) where not(n)-[]-() return n
+
+#查询节点
+MATCH (n:Member{memberId:122}) RETURN n limit 25
+
+#查找节点关系并删除
+MATCH (p1:Person)-[r:LOVES]-(p2:Person) 
+DELETE p1,p2,r
+
+
+# 距离根节点最大路径
+MATCH p=(root)-[*]->(leaf)
+WHERE NOT ()-->(root) AND NOT (leaf)-->()
+RETURN MAX(length(p))
+
+MATCH p=(p1:Member{id:46})-[*]->(p2:Member{id:46})
+WHERE NOT ()-->(p1) AND NOT (p2)-->()
+RETURN MAX(length(p))
+
+MATCH p=(root)-[*]->(p2:Member{memberId:46})
+WHERE NOT ()-->(root) AND NOT (p2)-->()
+RETURN MAX(length(p))
+
+# 最小路径
+MATCH (p1:Member{name:"张三2"}),(p2:Member{name:"李四"}),
+p=shortestpath((p1)-[*]->(p2))
+RETURN min(length(p))
